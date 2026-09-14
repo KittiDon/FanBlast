@@ -107,9 +107,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         buildMenu()
         statusItem.menu = menu
         refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
+        startPolling(every: Self.idleInterval, tolerance: Self.idleInterval * 0.3)
+    }
+
+    /// Poll cadence. The readout is only on screen while the menu is open, so
+    /// that is the only time it needs to be quick; the rest of the time this is
+    /// just keeping the icon in sync and the helper's 15-minute watchdog fed,
+    /// which a generous tolerance lets macOS coalesce with other wakeups.
+    private static let liveInterval: TimeInterval = 1.0
+    private static let idleInterval: TimeInterval = 3.0
+
+    private func startPolling(every interval: TimeInterval, tolerance: TimeInterval) {
+        timer?.invalidate()
+        let t = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             self?.refresh()
         }
+        t.tolerance = tolerance
+        // .common, not the default mode: while a menu is tracking, the run loop
+        // is in event-tracking mode and a default-mode timer never fires — the
+        // readout froze for exactly as long as the menu was open.
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -166,7 +184,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return item
     }
 
-    func menuWillOpen(_ menu: NSMenu) { refresh() }
+    func menuWillOpen(_ menu: NSMenu) {
+        refresh()
+        startPolling(every: Self.liveInterval, tolerance: 0.1)
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        startPolling(every: Self.idleInterval, tolerance: Self.idleInterval * 0.3)
+    }
 
     // MARK: Actions
 
