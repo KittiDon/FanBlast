@@ -12,7 +12,7 @@ struct FanStatus {
     var floorRPM = -1.0    // the minimum the helper is currently enforcing
     var stock = -1.0       // factory minimum, restored by "auto"
     var maxRPM = -1.0      // hardware ceiling
-    var mode = "unknown"   // "auto" | "max"
+    var mode = "unknown"   // "auto" | "curve" | "max"
 }
 
 enum FanHelper {
@@ -93,10 +93,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let warningItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let loginToggle = NSMenuItem(title: "Open at Login", action: #selector(toggleLogin), keyEquivalent: "")
 
-    /// The two modes sit side by side: one control, one click, and the selected
-    /// segment *is* the mode indicator — no checkmarks needed.
+    /// The modes sit side by side: one control, one click, and the selected
+    /// segment *is* the mode indicator — no checkmarks needed. Curve is the
+    /// helper's own temperature-following floor.
+    private static let modes = ["auto", "curve", "max"]
     private let modeControl = NSSegmentedControl(
-        labels: ["Automatic", "Jet Mode"],
+        labels: ["Automatic", "Curve", "Jet Mode"],
         trackingMode: .selectOne,
         target: nil,
         action: nil
@@ -165,12 +167,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         modeControl.target = self
         modeControl.action = #selector(modeChanged(_:))
         modeControl.selectedSegment = 0
-        modeControl.setWidth(96, forSegment: 0)   // equal halves, wider than either label
-        modeControl.setWidth(96, forSegment: 1)
+        for segment in 0..<Self.modes.count {     // equal thirds, wider than any label
+            modeControl.setWidth(80, forSegment: segment)
+        }
 
         // Size the container from what the control actually needs. Hardcoding it
-        // clipped the labels: two 96pt segments want 201pt, not the 192pt that a
-        // 220pt-wide container leaves after padding.
+        // clipped the labels: segments want a few points more than their widths
+        // add up to.
         let fitting = modeControl.fittingSize
         let inset: CGFloat = 14
         let container = NSView(frame: NSRect(x: 0, y: 0,
@@ -196,7 +199,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: Actions
 
     @objc private func modeChanged(_ sender: NSSegmentedControl) {
-        apply(sender.selectedSegment == 1 ? "max" : "auto")
+        apply(Self.modes[max(sender.selectedSegment, 0)])
         // A custom view does not dismiss the menu on click the way a plain item
         // does, so close it explicitly.
         menu.cancelTracking()
@@ -231,7 +234,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func render(_ status: FanStatus?, failed: Bool = false) {
         guard let status else {
-            setIcon(jet: false)
+            setIcon(for: "auto")
             readoutItem.title = "Fan helper not running"
             modeControl.isEnabled = false
             warningItem.title = "Start com.kirtan.friday.fan-helper to control the fan"
@@ -243,8 +246,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         modeControl.isEnabled = true
 
         let isJet = status.mode == "max"
-        modeControl.selectedSegment = isJet ? 1 : 0
-        setIcon(jet: isJet)
+        modeControl.selectedSegment = Self.modes.firstIndex(of: status.mode) ?? 0
+        setIcon(for: status.mode)
 
         // The menu bar shows the icon alone, so the numbers live in the menu.
         let rpm = status.actual >= 0 ? status.actual : smc_number("F0Ac")
@@ -252,6 +255,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         var readout: [String] = []
         if rpm >= 0 { readout.append("\(Int(rpm.rounded())) RPM") }
         if temp >= 0 { readout.append("\(Int(temp.rounded()))°C") }
+        if status.mode == "curve" && status.floorRPM >= 0 {
+            readout.append("curve \(Int(status.floorRPM.rounded()))")
+        }
         readoutItem.title = readout.isEmpty ? "Fan running" : readout.joined(separator: " · ")
 
         // Jet Mode is safe from interference: the helper raises the fan's
@@ -264,7 +270,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             warningItem.title = "Could not change mode — helper refused"
             warningItem.isHidden = false
         } else if !isJet && forcedByOther {
-            warningItem.title = "Another app is forcing the fan — Automatic can't slow it"
+            warningItem.title = "Another app is forcing the fan — FanBlast can't slow it"
             warningItem.isHidden = false
         } else {
             warningItem.isHidden = true
@@ -273,18 +279,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateLoginToggle()
     }
 
-    /// Icon only — no RPM text. Outline for Automatic, filled plus the system
-    /// accent tint for Jet Mode, so the two read apart at a glance in a
-    /// monochrome menu bar.
-    private func setIcon(jet: Bool) {
+    /// Icon only — no RPM text. Outline for Automatic, filled for Curve, filled
+    /// plus the system accent tint for Jet Mode, so the three read apart at a
+    /// glance in a monochrome menu bar.
+    private func setIcon(for mode: String) {
         guard let button = statusItem.button else { return }
         button.title = ""
-        let image = NSImage(systemSymbolName: jet ? "fanblades.fill" : "fanblades",
-                            accessibilityDescription: jet ? "Fan: Jet Mode" : "Fan: Automatic")
+        let (symbol, name, fallback): (String, String, String)
+        switch mode {
+        case "max":   (symbol, name, fallback) = ("fanblades.fill", "Jet Mode", "JET")
+        case "curve": (symbol, name, fallback) = ("fanblades.fill", "Curve", "CRV")
+        default:      (symbol, name, fallback) = ("fanblades", "Automatic", "FAN")
+        }
+        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Fan: \(name)")
         image?.isTemplate = true
         button.image = image
-        button.contentTintColor = jet ? .controlAccentColor : nil
-        if image == nil { button.title = jet ? "JET" : "FAN" }   // symbol unavailable
+        button.contentTintColor = mode == "max" ? .controlAccentColor : nil
+        if image == nil { button.title = fallback }   // symbol unavailable
     }
 
     // MARK: Open at Login
